@@ -1,0 +1,123 @@
+[worldserver]
+
+########################################
+# mod-loot-boost
+########################################
+#
+# Set these core options in worldserver.conf back to 1 when using this module:
+#     Rate.Drop.Item.ReferencedAmount = 1
+#     Rate.Drop.Item.GroupAmount = 1
+#
+# All multipliers accept decimals. A fraction is applied as a chance:
+# 1.5 means every bonus has a 50% chance to happen.
+#
+
+########################################
+# Boss loot
+########################################
+#
+#    BossLoot.Enable
+#        Description: More loot from dungeon bosses, raid bosses, boss chests
+#                     and world bosses. Also turns the emblem multiplier on or off.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+
+BossLoot.Enable = 1
+
+#
+#    BossLoot.Log
+#        Description: Write one line to the server log for every boss looted,
+#                     with the multiplier used and the item count before and after.
+#                     Useful to check that each instance uses the right setting.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+
+BossLoot.Log = 1
+
+#
+#    BossLoot.MaxItems
+#        Description: The module stops adding items once the loot window holds
+#                     this many items. Normal loot is never removed.
+#                     Regular items and quest items share 18 slots per player,
+#                     so 15 leaves room for 3 quest items.
+#        Default:     15 (1 to 18)
+
+BossLoot.MaxItems = 15
+
+#
+#    BossLoot.Multiplier.Dungeon
+#    BossLoot.Multiplier.Raid10
+#    BossLoot.Multiplier.Raid15
+#    BossLoot.Multiplier.Raid20
+#    BossLoot.Multiplier.Raid25
+#    BossLoot.Multiplier.Raid40
+#    BossLoot.Multiplier.Other
+#        Description: Boss loot multiplier, chosen by the maximum player count
+#                     of the instance the boss dies in.
+#                     Dungeon: every 5 player dungeon, normal and heroic.
+#                     Raid10 to Raid40: raids with exactly that many players.
+#                     Other: world bosses, battleground bosses, and raids of
+#                     any other size.
+#                     2 = twice the boss gear, 1 = normal loot.
+#        Default:     2
+
+BossLoot.Multiplier.Dungeon = 2
+BossLoot.Multiplier.Raid10 = 2
+BossLoot.Multiplier.Raid15 = 2
+BossLoot.Multiplier.Raid20 = 2
+BossLoot.Multiplier.Raid25 = 2
+BossLoot.Multiplier.Raid40 = 2
+BossLoot.Multiplier.Other = 2
+
+#
+#    BossLoot.Emblems.Multiplier
+#        Description: Multiplies the number of emblems in every loot window
+#                     (bosses and boss chests). Every player gets the
+#                     multiplied amount.
+#                     If you raised emblem counts in the database before,
+#                     undo that first, or both will stack.
+#        Default:     5
+
+BossLoot.Emblems.Multiplier = 5
+
+#
+#    BossLoot.Emblems.Items
+#        Description: Item ids counted as emblems, separated by commas.
+#                     Changes need a server restart.
+#        Default:     "29434,40752,40753,45624,47241,49426"
+#                     (Badge of Justice, Emblem of Heroism, Valor, Conquest,
+#                     Triumph, Frost)
+
+BossLoot.Emblems.Items = "29434,40752,40753,45624,47241,49426"
+
+########################################
+# BoE loot
+########################################
+#
+#    BoeLoot.Enable
+#        Description: Better odds for BoE (bind on equip) blues and epics,
+#                     everywhere: mobs, chests, containers, fishing and
+#                     pickpocketing.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+
+BoeLoot.Enable = 1
+
+#
+#    BoeLoot.Rare.Multiplier
+#    BoeLoot.Epic.Multiplier
+#        Description: Drop chance multiplier for BoE blues (Rare) and
+#                     BoE epics (Epic). 5 = five times as many found.
+#        Default:     5
+
+BoeLoot.Rare.Multiplier = 5
+BoeLoot.Epic.Multiplier = 5
+
+#
+#    BoeLoot.MaxChance
+#        Description: Drop chance cap in percent. Items that already drop at
+#                     least this often are not boosted, and boosted items
+#                     stay below it.
+#        Default:     5
+
+BoeLoot.MaxChance = 5
