@@ -22,7 +22,7 @@
 #        Default:     1 - Enabled
 #                     0 - Disabled
 
-BossLoot.Enable = 1
+BossLoot.Enable = 0
 
 #
 #    BossLoot.Log
@@ -32,7 +32,7 @@ BossLoot.Enable = 1
 #        Default:     1 - Enabled
 #                     0 - Disabled
 
-BossLoot.Log = 1
+BossLoot.Log = 0
 
 #
 #    BossLoot.MaxItems
@@ -61,13 +61,13 @@ BossLoot.MaxItems = 15
 #                     2 = twice the boss gear, 1 = normal loot.
 #        Default:     2
 
-BossLoot.Multiplier.Dungeon = 2
-BossLoot.Multiplier.Raid10 = 2
-BossLoot.Multiplier.Raid15 = 2
-BossLoot.Multiplier.Raid20 = 2
-BossLoot.Multiplier.Raid25 = 2
-BossLoot.Multiplier.Raid40 = 2
-BossLoot.Multiplier.Other = 2
+BossLoot.Multiplier.Dungeon = 1
+BossLoot.Multiplier.Raid10 = 1
+BossLoot.Multiplier.Raid15 = 1
+BossLoot.Multiplier.Raid20 = 1
+BossLoot.Multiplier.Raid25 = 1
+BossLoot.Multiplier.Raid40 = 1
+BossLoot.Multiplier.Other = 1
 
 #
 #    BossLoot.Emblems.Multiplier
@@ -78,7 +78,7 @@ BossLoot.Multiplier.Other = 2
 #                     undo that first, or both will stack.
 #        Default:     5
 
-BossLoot.Emblems.Multiplier = 5
+BossLoot.Emblems.Multiplier = 1
 
 #
 #    BossLoot.Emblems.Items
@@ -101,7 +101,7 @@ BossLoot.Emblems.Items = "29434,40752,40753,45624,47241,49426"
 #        Default:     1 - Enabled
 #                     0 - Disabled
 
-BoeLoot.Enable = 1
+BoeLoot.Enable = 0
 
 #
 #    BoeLoot.Rare.Multiplier
@@ -110,8 +110,8 @@ BoeLoot.Enable = 1
 #                     BoE epics (Epic). 5 = five times as many found.
 #        Default:     5
 
-BoeLoot.Rare.Multiplier = 5
-BoeLoot.Epic.Multiplier = 5
+BoeLoot.Rare.Multiplier = 1
+BoeLoot.Epic.Multiplier = 1
 
 #
 #    BoeLoot.MaxChance
@@ -120,4 +120,4 @@ BoeLoot.Epic.Multiplier = 5
 #                     stay below it.
 #        Default:     5
 
-BoeLoot.MaxChance = 5
+BoeLoot.MaxChance = 1
