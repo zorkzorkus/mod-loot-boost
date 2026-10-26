@@ -4,6 +4,20 @@
 # mod-loot-boost
 ########################################
 #
+# Out of the box this module changes nothing. Turn on the parts you want
+# (BossLoot.Enable, RareLoot.Enable, BoeLoot.Enable) and raise their
+# multipliers above 1.
+#
+# If an option is missing from this file, the module uses the value listed
+# under "Default", which is always the value written here.
+#
+# Changes take effect with ".reload config", except options marked
+# "Needs a server restart".
+#
+# The module reads the loot tables (creature_loot_template and the other
+# *_loot_template tables) once at startup. After changing them in the
+# database, restart the server so the module sees the changes too.
+#
 # Set these core options in worldserver.conf back to 1 when using this module:
 #     Rate.Drop.Item.ReferencedAmount = 1
 #     Rate.Drop.Item.GroupAmount = 1
@@ -19,18 +33,19 @@
 #    BossLoot.Enable
 #        Description: More loot from dungeon bosses, raid bosses, boss chests
 #                     and world bosses. Also turns the emblem multiplier on or off.
-#        Default:     1 - Enabled
-#                     0 - Disabled
+#        Default:     0 - Disabled
+#                     1 - Enabled
 
 BossLoot.Enable = 0
 
 #
 #    BossLoot.Log
-#        Description: Write one line to the server log for every boss looted,
-#                     with the multiplier used and the item count before and after.
+#        Description: Write one line to the server log for every boss or rare
+#                     looted, with the multiplier and duplicate weight used and
+#                     the item count before and after.
 #                     Useful to check that each instance uses the right setting.
-#        Default:     1 - Enabled
-#                     0 - Disabled
+#        Default:     0 - Disabled
+#                     1 - Enabled
 
 BossLoot.Log = 0
 
@@ -59,7 +74,7 @@ BossLoot.MaxItems = 15
 #                     Other: world bosses, battleground bosses, and raids of
 #                     any other size.
 #                     2 = twice the boss gear, 1 = normal loot.
-#        Default:     2
+#        Default:     1
 
 BossLoot.Multiplier.Dungeon = 1
 BossLoot.Multiplier.Raid10 = 1
@@ -70,25 +85,88 @@ BossLoot.Multiplier.Raid40 = 1
 BossLoot.Multiplier.Other = 1
 
 #
+#    BossLoot.Duplicates.Weight.Dungeon
+#    BossLoot.Duplicates.Weight.Raid10
+#    BossLoot.Duplicates.Weight.Raid15
+#    BossLoot.Duplicates.Weight.Raid20
+#    BossLoot.Duplicates.Weight.Raid25
+#    BossLoot.Duplicates.Weight.Raid40
+#    BossLoot.Duplicates.Weight.Other
+#        Description: How likely a bonus item is to be a copy of an item that
+#                     is already in the loot window, chosen by where the loot
+#                     drops (same sizes as the multipliers above). Applies to
+#                     bosses and rares. World rares use Other.
+#                     Every copy already in the window multiplies the item's
+#                     chance by this value once more, so a third copy is much
+#                     rarer than a second one.
+#                     Each copy rolls its own random stats.
+#                     1 = copies are as likely as anything else,
+#                     0 = bonus items are never copies (the core itself
+#                     allows gear once and other items up to 3 times).
+#                     Example: a group drops A 80%, B 10%, C 10%, and gets one
+#                     bonus pick. The chance to end up with B is
+#                     19% at 1, 24% at 0.5, 31% at 0.25, 40% at 0.1, 51% at 0.
+#                     Small groups that get many picks see copies more often:
+#                     a group of 3 equal items picked 3 times has at least one
+#                     copy in 21% of kills at 0.1, and in 7% at 0.03.
+#        Default:     0 (0 to 1)
+
+BossLoot.Duplicates.Weight.Dungeon = 0
+BossLoot.Duplicates.Weight.Raid10 = 0
+BossLoot.Duplicates.Weight.Raid15 = 0
+BossLoot.Duplicates.Weight.Raid20 = 0
+BossLoot.Duplicates.Weight.Raid25 = 0
+BossLoot.Duplicates.Weight.Raid40 = 0
+BossLoot.Duplicates.Weight.Other = 0
+
+#
 #    BossLoot.Emblems.Multiplier
 #        Description: Multiplies the number of emblems in every loot window
 #                     (bosses and boss chests). Every player gets the
-#                     multiplied amount.
+#                     multiplied amount. Needs BossLoot.Enable = 1.
 #                     If you raised emblem counts in the database before,
 #                     undo that first, or both will stack.
-#        Default:     5
+#        Default:     1
 
 BossLoot.Emblems.Multiplier = 1
 
 #
 #    BossLoot.Emblems.Items
 #        Description: Item ids counted as emblems, separated by commas.
-#                     Changes need a server restart.
+#                     Needs a server restart.
 #        Default:     "29434,40752,40753,45624,47241,49426"
 #                     (Badge of Justice, Emblem of Heroism, Valor, Conquest,
 #                     Triumph, Frost)
 
 BossLoot.Emblems.Items = "29434,40752,40753,45624,47241,49426"
+
+########################################
+# Rare loot
+########################################
+#
+#    RareLoot.Enable
+#        Description: More loot from rare and rare elite creatures (silver
+#                     dragon), like Blind Hunter in Razorfen Kraul or Vultros
+#                     in Westfall. Their own gear gets extra rolls: items from
+#                     their loot groups, and gear (green or better) that rolls
+#                     on its own. Random world drops are not changed.
+#                     Uses the duplicate weights above.
+#        Default:     0 - Disabled
+#                     1 - Enabled
+
+RareLoot.Enable = 0
+
+#
+#    RareLoot.Multiplier.Dungeon
+#    RareLoot.Multiplier.World
+#        Description: Rare loot multiplier.
+#                     Dungeon: rares in 5 player dungeons, normal and heroic.
+#                     World: all other rares.
+#                     2 = twice the rare's gear, 1 = normal loot.
+#        Default:     1
+
+RareLoot.Multiplier.Dungeon = 1
+RareLoot.Multiplier.World = 1
 
 ########################################
 # BoE loot
@@ -98,8 +176,8 @@ BossLoot.Emblems.Items = "29434,40752,40753,45624,47241,49426"
 #        Description: Better odds for BoE (bind on equip) blues and epics,
 #                     everywhere: mobs, chests, containers, fishing and
 #                     pickpocketing.
-#        Default:     1 - Enabled
-#                     0 - Disabled
+#        Default:     0 - Disabled
+#                     1 - Enabled
 
 BoeLoot.Enable = 0
 
@@ -108,7 +186,7 @@ BoeLoot.Enable = 0
 #    BoeLoot.Epic.Multiplier
 #        Description: Drop chance multiplier for BoE blues (Rare) and
 #                     BoE epics (Epic). 5 = five times as many found.
-#        Default:     5
+#        Default:     1
 
 BoeLoot.Rare.Multiplier = 1
 BoeLoot.Epic.Multiplier = 1
@@ -117,7 +195,8 @@ BoeLoot.Epic.Multiplier = 1
 #    BoeLoot.MaxChance
 #        Description: Drop chance cap in percent. Items that already drop at
 #                     least this often are not boosted, and boosted items
-#                     stay below it.
-#        Default:     5
+#                     stay below it. Has no effect while the multipliers
+#                     above are 1.
+#        Default:     5 (0 to 100)
 
-BoeLoot.MaxChance = 1
+BoeLoot.MaxChance = 5

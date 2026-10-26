@@ -31,6 +31,7 @@ namespace LootBoost
         // Condition source types (see ConditionMgr.h)
         constexpr int32 CONDITION_SOURCE_CREATURE_LOOT = 1;
         constexpr int32 CONDITION_SOURCE_GAMEOBJECT_LOOT = 4;
+        constexpr int32 CONDITION_SOURCE_REFERENCE_LOOT = 10;
 
         struct LootRow
         {
@@ -120,6 +121,39 @@ namespace LootBoost
             return stats;
         }
 
+        // Effective drop chance of a grouped row. Rows without a chance share
+        // whatever the chanced rows of the group leave over, like in the core.
+        float GroupedWeight(LootRow const& row, GroupStats const& stats)
+        {
+            if (row.chance > 0.0f)
+                return row.chance;
+
+            if (!stats.zeroChanceRows)
+                return 0.0f;
+
+            return std::max(0.0f, 100.0f - stats.explicitChance) / float(stats.zeroChanceRows);
+        }
+
+        // Chance in percent that a group drops anything at all.
+        float GroupTotalChance(GroupStats const& stats)
+        {
+            float total = stats.explicitChance;
+            if (stats.zeroChanceRows)
+                total = std::max(total, 100.0f);
+            return std::min(total, 100.0f);
+        }
+
+        // Rows the core itself rejects as invalid
+        bool HasValidCounts(LootRow const& row)
+        {
+            return row.minCount && row.maxCount >= row.minCount;
+        }
+
+        PickEntry MakeEntry(LootRow const& row, float weight)
+        {
+            return { row.item, weight, row.lootMode, row.minCount, row.maxCount };
+        }
+
         std::vector<uint32> ParseIdList(std::string const& text)
         {
             std::vector<uint32> ids;
@@ -171,25 +205,27 @@ namespace LootBoost
 
     void Manager::LoadConfig(bool reload)
     {
-        static char const* const multiplierNames[BUCKET_COUNT] =
+        static char const* const bucketNames[BUCKET_COUNT] =
         {
-            "BossLoot.Multiplier.Dungeon",
-            "BossLoot.Multiplier.Raid10",
-            "BossLoot.Multiplier.Raid15",
-            "BossLoot.Multiplier.Raid20",
-            "BossLoot.Multiplier.Raid25",
-            "BossLoot.Multiplier.Raid40",
-            "BossLoot.Multiplier.Other"
+            "Dungeon", "Raid10", "Raid15", "Raid20", "Raid25", "Raid40", "Other"
         };
 
-        _bossEnabled = sConfigMgr->GetOption<bool>("BossLoot.Enable", true);
-        _logKills = sConfigMgr->GetOption<bool>("BossLoot.Log", true);
+        // Every default here must match the "Default:" line of the option in
+        // conf/mod_loot_boost.conf.dist. All defaults leave loot unchanged,
+        // so a missing option never changes anything.
+
+        _bossEnabled = sConfigMgr->GetOption<bool>("BossLoot.Enable", false);
+        _logKills = sConfigMgr->GetOption<bool>("BossLoot.Log", false);
         _maxItems = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("BossLoot.MaxItems", 15), 1, MAX_NR_LOOT_ITEMS);
 
         for (uint8 i = 0; i < BUCKET_COUNT; ++i)
-            _multipliers[i] = std::max(0.0f, sConfigMgr->GetOption<float>(multiplierNames[i], 2.0f));
+        {
+            std::string const name = bucketNames[i];
+            _multipliers[i] = std::max(0.0f, sConfigMgr->GetOption<float>("BossLoot.Multiplier." + name, 1.0f));
+            _duplicateWeights[i] = std::clamp(sConfigMgr->GetOption<float>("BossLoot.Duplicates.Weight." + name, 0.0f), 0.0f, 1.0f);
+        }
 
-        _emblemMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("BossLoot.Emblems.Multiplier", 5.0f));
+        _emblemMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("BossLoot.Emblems.Multiplier", 1.0f));
 
         // The emblem list is used while the loot tables are scanned at startup,
         // so changes to it only take effect after a restart.
@@ -201,9 +237,13 @@ namespace LootBoost
             _emblemListLoaded = true;
         }
 
-        _boeEnabled = sConfigMgr->GetOption<bool>("BoeLoot.Enable", true);
-        _boeRareMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("BoeLoot.Rare.Multiplier", 5.0f));
-        _boeEpicMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("BoeLoot.Epic.Multiplier", 5.0f));
+        _rareEnabled = sConfigMgr->GetOption<bool>("RareLoot.Enable", false);
+        _rareDungeonMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("RareLoot.Multiplier.Dungeon", 1.0f));
+        _rareWorldMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("RareLoot.Multiplier.World", 1.0f));
+
+        _boeEnabled = sConfigMgr->GetOption<bool>("BoeLoot.Enable", false);
+        _boeRareMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("BoeLoot.Rare.Multiplier", 1.0f));
+        _boeEpicMultiplier = std::max(0.0f, sConfigMgr->GetOption<float>("BoeLoot.Epic.Multiplier", 1.0f));
         _boeMaxChance = std::clamp(sConfigMgr->GetOption<float>("BoeLoot.MaxChance", 5.0f), 0.0f, 100.0f);
 
         if (reload)
@@ -219,24 +259,63 @@ namespace LootBoost
         return _emblemItems.find(itemId) != _emblemItems.end();
     }
 
+    // Items worth multiplying: anything equippable, plus epic items that
+    // can't be equipped, like tier tokens. Money, emblems and quest items
+    // never count.
+    bool Manager::IsBossLoot(ItemTemplate const* proto) const
+    {
+        if (!proto)
+            return false;
+
+        if (proto->Class == ITEM_CLASS_MONEY || proto->Class == ITEM_CLASS_QUEST || IsEmblem(proto->ItemId))
+            return false;
+
+        return proto->InventoryType != INVTYPE_NON_EQUIP || proto->Quality >= ITEM_QUALITY_EPIC;
+    }
+
     void Manager::BuildData()
     {
         uint32 const startTime = getMSTime();
 
+        _pools.clear();
         _creatureBonusRefs.clear();
         _chestBonusRefs.clear();
-        _creatureGearGroups.clear();
+        _creatureGroups.clear();
+        _creatureSingles.clear();
         _boePools.clear();
         _boeExcludedItems.clear();
         _boeExcludedPools.clear();
 
+        // --- Conditions (items with conditions are never added by the module) ---
+        std::unordered_set<uint64> creatureConditioned;
+        std::unordered_set<uint64> chestConditioned;
+        std::unordered_set<uint64> referenceConditioned;
+        if (QueryResult result = WorldDatabase.Query("SELECT SourceTypeOrReferenceId, SourceGroup, SourceEntry FROM conditions WHERE SourceTypeOrReferenceId IN (1, 4, 10)"))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                int32 const sourceType = fields[0].Get<int32>();
+                uint32 const lootId = fields[1].Get<uint32>();
+                uint32 const item = uint32(fields[2].Get<int32>());
+
+                if (sourceType == CONDITION_SOURCE_CREATURE_LOOT)
+                    creatureConditioned.insert(MakeKey(lootId, item));
+                else if (sourceType == CONDITION_SOURCE_GAMEOBJECT_LOOT)
+                    chestConditioned.insert(MakeKey(lootId, item));
+                else if (sourceType == CONDITION_SOURCE_REFERENCE_LOOT)
+                    referenceConditioned.insert(MakeKey(lootId, item));
+            } while (result->NextRow());
+        }
+
         // --- Reference pools ---------------------------------------------
         std::vector<LootRow> const referenceRows = LoadRows("reference_loot_template");
+        std::unordered_map<uint64, GroupStats> const referenceStats = BuildGroupStats(referenceRows);
 
-        std::unordered_map<uint32, PoolInfo> pools;
+        std::unordered_map<uint32, PoolInfo> poolInfos;
         for (LootRow const& row : referenceRows)
         {
-            PoolInfo& pool = pools[row.entry];
+            PoolInfo& pool = poolInfos[row.entry];
 
             if (row.reference)
             {
@@ -263,10 +342,10 @@ namespace LootBoost
                 pool.allBoeEpic = false;
         }
 
-        auto isBossPool = [&pools](uint32 referenceId) -> bool
+        auto isBossPool = [&poolInfos](uint32 referenceId) -> bool
         {
-            auto itr = pools.find(referenceId);
-            if (itr == pools.end())
+            auto itr = poolInfos.find(referenceId);
+            if (itr == poolInfos.end())
                 return false;
 
             PoolInfo const& pool = itr->second;
@@ -275,7 +354,7 @@ namespace LootBoost
 
         uint32 boeRarePools = 0;
         uint32 boeEpicPools = 0;
-        for (auto const& [referenceId, pool] : pools)
+        for (auto const& [referenceId, pool] : poolInfos)
         {
             if (pool.nested || !pool.items)
                 continue;
@@ -292,27 +371,44 @@ namespace LootBoost
             }
         }
 
-        // --- Conditions (items with conditions are never added by the module) ---
-        std::unordered_set<uint64> creatureConditioned;
-        std::unordered_set<uint64> chestConditioned;
-        if (QueryResult result = WorldDatabase.Query("SELECT SourceTypeOrReferenceId, SourceGroup, SourceEntry FROM conditions WHERE SourceTypeOrReferenceId IN (1, 4)"))
+        // --- Boss gear pools, rolled by the module itself ------------------
+        // The whole pool is copied, like the core rolls it for a reference row.
+        // Quest rows, rows with conditions and groups mixed with quest rows
+        // are left out.
+        std::unordered_map<uint64, PickGroup> poolGroups;
+        for (LootRow const& row : referenceRows)
         {
-            do
-            {
-                Field* fields = result->Fetch();
-                int32 const sourceType = fields[0].Get<int32>();
-                uint32 const lootId = fields[1].Get<uint32>();
-                uint32 const item = uint32(fields[2].Get<int32>());
+            if (row.reference || row.quest || !isBossPool(row.entry))
+                continue;
 
-                if (sourceType == CONDITION_SOURCE_CREATURE_LOOT)
-                    creatureConditioned.insert(MakeKey(lootId, item));
-                else if (sourceType == CONDITION_SOURCE_GAMEOBJECT_LOOT)
-                    chestConditioned.insert(MakeKey(lootId, item));
-            } while (result->NextRow());
+            if (referenceConditioned.count(MakeKey(row.entry, row.item)) || !HasValidCounts(row))
+                continue;
+
+            if (!sObjectMgr->GetItemTemplate(row.item))
+                continue;
+
+            if (!row.groupId)
+            {
+                if (row.chance > 0.0f)
+                    _pools[row.entry].singles.push_back(MakeEntry(row, row.chance));
+                continue;
+            }
+
+            GroupStats const& stats = referenceStats.at(MakeKey(row.entry, row.groupId));
+            if (stats.questRows)
+                continue;
+
+            PickGroup& group = poolGroups[MakeKey(row.entry, row.groupId)];
+            group.groupId = row.groupId;
+            group.totalChance = GroupTotalChance(stats);
+            group.entries.push_back(MakeEntry(row, GroupedWeight(row, stats)));
         }
 
+        for (auto& [key, group] : poolGroups)
+            _pools[uint32(key >> 32)].groups.push_back(std::move(group));
+
         // --- Boss gear references (creatures and chests) --------------------
-        auto collectBonusReferences = [&isBossPool](std::vector<LootRow> const& rows,
+        auto collectBonusReferences = [this](std::vector<LootRow> const& rows,
             std::unordered_map<uint64, GroupStats> const& stats,
             std::unordered_set<uint64> const& conditioned,
             std::unordered_map<uint32, std::vector<BonusReference>>& out) -> uint32
@@ -336,7 +432,7 @@ namespace LootBoost
                     continue;
 
                 uint32 const referenceId = uint32(std::abs(row.reference));
-                if (!isBossPool(referenceId))
+                if (!_pools.count(referenceId))
                     continue;
 
                 out[row.entry].push_back({ referenceId, row.maxCount, row.lootMode });
@@ -353,59 +449,57 @@ namespace LootBoost
         std::unordered_map<uint64, GroupStats> const chestStats = BuildGroupStats(chestRows);
         uint32 const chestRefCount = collectBonusReferences(chestRows, chestStats, chestConditioned, _chestBonusRefs);
 
-        // --- Plain gear groups (used for bosses only, decided at kill time) ---
-        std::unordered_map<uint64, GearGroup> gearGroups;
+        // --- Plain loot groups and single items (decided at kill time) -------
+        // Groups: used for bosses and rares. Single items: used for rares only.
+        std::unordered_map<uint64, PickGroup> creatureGroups;
+        std::unordered_set<uint64> creatureGroupsWithLoot;
+        uint32 singleCount = 0;
         for (LootRow const& row : creatureRows)
         {
-            if (!row.groupId || row.reference || row.quest)
+            if (row.reference || row.quest)
                 continue;
 
-            auto statsItr = creatureStats.find(MakeKey(row.entry, row.groupId));
-            if (statsItr == creatureStats.end())
-                continue;
-
-            GroupStats const& stats = statsItr->second;
-            if (stats.referenceRows || stats.questRows)
-                continue; // mixed groups are left to the core
-
-            if (creatureConditioned.count(MakeKey(row.entry, row.item)))
-                continue;
-
-            // Skip rows the core itself rejects as invalid
-            if (!row.minCount || row.maxCount < row.minCount)
+            if (creatureConditioned.count(MakeKey(row.entry, row.item)) || !HasValidCounts(row))
                 continue;
 
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(row.item);
             if (!proto)
                 continue;
 
-            // Items without a chance share whatever the chanced items leave over
-            float weight = row.chance;
-            if (weight <= 0.0f)
-                weight = stats.zeroChanceRows ? std::max(0.0f, 100.0f - stats.explicitChance) / float(stats.zeroChanceRows) : 0.0f;
+            if (!row.groupId)
+            {
+                // Ungrouped: green or better gear, or epic tokens
+                if (row.chance > 0.0f && IsBossLoot(proto) && proto->Quality >= ITEM_QUALITY_UNCOMMON)
+                {
+                    _creatureSingles[row.entry].push_back(MakeEntry(row, row.chance));
+                    ++singleCount;
+                }
+                continue;
+            }
 
-            GearGroup& group = gearGroups[MakeKey(row.entry, row.groupId)];
+            uint64 const key = MakeKey(row.entry, row.groupId);
+            GroupStats const& stats = creatureStats.at(key);
+            if (stats.referenceRows || stats.questRows)
+                continue; // mixed groups are left to the core
+
+            PickGroup& group = creatureGroups[key];
             group.groupId = row.groupId;
-            group.entries.push_back({ row.item, weight, row.lootMode, row.minCount, row.maxCount, proto->InventoryType != INVTYPE_NON_EQUIP });
+            group.totalChance = GroupTotalChance(stats);
+            group.entries.push_back(MakeEntry(row, GroupedWeight(row, stats)));
+
+            if (IsBossLoot(proto))
+                creatureGroupsWithLoot.insert(key);
         }
 
-        uint32 gearGroupCount = 0;
-        for (auto& [key, group] : gearGroups)
+        uint32 groupCount = 0;
+        for (auto& [key, group] : creatureGroups)
         {
-            bool const hasGear = std::any_of(group.entries.begin(), group.entries.end(),
-                [](GroupEntry const& entry) { return entry.equippable; });
-            if (!hasGear)
+            // Only groups with gear or tokens in them
+            if (!creatureGroupsWithLoot.count(key))
                 continue;
 
-            GroupStats const& stats = creatureStats.at(key);
-            float total = stats.explicitChance;
-            if (stats.zeroChanceRows)
-                total = std::max(total, 100.0f);
-            group.totalChance = std::min(total, 100.0f);
-
-            uint32 const lootId = uint32(key >> 32);
-            _creatureGearGroups[lootId].push_back(std::move(group));
-            ++gearGroupCount;
+            _creatureGroups[uint32(key >> 32)].push_back(std::move(group));
+            ++groupCount;
         }
 
         // --- BoE guard: skip BoEs that sit in crowded groups ----------------
@@ -434,7 +528,7 @@ namespace LootBoost
             }
         };
 
-        markCrowded(referenceRows, BuildGroupStats(referenceRows));
+        markCrowded(referenceRows, referenceStats);
         markCrowded(creatureRows, creatureStats);
         markCrowded(chestRows, chestStats);
         for (char const* table : { "item_loot_template", "fishing_loot_template", "pickpocketing_loot_template" })
@@ -445,21 +539,29 @@ namespace LootBoost
 
         _dataBuilt = true;
 
-        LOG_INFO("module", "LootBoost: {} boss gear references in {} creature loot tables, {} in {} chest loot tables, {} plain gear groups (used when a boss dies), {} BoE blue pools, {} BoE epic pools, {} BoE entries skipped (crowded groups). Built in {} ms.",
-            creatureRefCount, _creatureBonusRefs.size(), chestRefCount, _chestBonusRefs.size(), gearGroupCount,
+        LOG_INFO("module", "LootBoost: {} boss gear pools, {} references to them in {} creature loot tables, {} in {} chest loot tables, {} loot groups and {} single items (used for bosses and rares), {} BoE blue pools, {} BoE epic pools, {} BoE entries skipped (crowded groups). Built in {} ms.",
+            _pools.size(), creatureRefCount, _creatureBonusRefs.size(), chestRefCount, _chestBonusRefs.size(), groupCount, singleCount,
             boeRarePools, boeEpicPools, _boeExcludedItems.size() + _boeExcludedPools.size(), GetMSTimeDiffToNow(startTime));
     }
 
     // ------------------------------------------------------------------
-    // Boss loot
+    // Boss and rare loot
     // ------------------------------------------------------------------
+
+    bool Manager::IsRare(Creature const* creature)
+    {
+        uint32 const rank = creature->GetCreatureTemplate()->rank;
+        return rank == CREATURE_ELITE_RARE || rank == CREATURE_ELITE_RAREELITE;
+    }
 
     void Manager::OnLootGenerated(Loot* loot, LootTemplate const* tab, LootStore const& store, Player* lootOwner, uint16 lootMode)
     {
         if (!_dataBuilt || !loot || !tab || !lootOwner)
             return;
 
-        if (!_bossEnabled.load(std::memory_order_relaxed))
+        bool const bossEnabled = _bossEnabled.load(std::memory_order_relaxed);
+        bool const rareEnabled = _rareEnabled.load(std::memory_order_relaxed);
+        if (!bossEnabled && !rareEnabled)
             return;
 
         bool const isCreature = &store == &LootTemplates_Creature;
@@ -467,8 +569,10 @@ namespace LootBoost
         if (!isCreature && !isChest)
             return;
 
+        SourceKind kind = SOURCE_BOSS;
         std::vector<BonusReference> const* refs = nullptr;
-        std::vector<GearGroup> const* groups = nullptr;
+        std::vector<PickGroup> const* groups = nullptr;
+        std::vector<PickEntry> const* singles = nullptr;
         Map const* sourceMap = nullptr;
         std::string sourceName;
         uint32 sourceEntry = 0;
@@ -483,15 +587,32 @@ namespace LootBoost
                 uint32 const lootId = creature->GetCreatureTemplate()->lootid;
                 if (lootId && store.GetLootFor(lootId) == tab)
                 {
-                    auto refItr = _creatureBonusRefs.find(lootId);
-                    if (refItr != _creatureBonusRefs.end())
-                        refs = &refItr->second;
+                    bool const boss = creature->IsDungeonBoss() || creature->isWorldBoss();
+                    bool const rare = !boss && IsRare(creature);
+                    if (rare)
+                        kind = SOURCE_RARE;
 
-                    if (creature->IsDungeonBoss() || creature->isWorldBoss())
+                    // Bosses and rares get their groups boosted, rares also their
+                    // single items. Boss gear pools are boosted on any creature.
+                    if (rare ? rareEnabled : bossEnabled)
                     {
-                        auto groupItr = _creatureGearGroups.find(lootId);
-                        if (groupItr != _creatureGearGroups.end())
-                            groups = &groupItr->second;
+                        auto refItr = _creatureBonusRefs.find(lootId);
+                        if (refItr != _creatureBonusRefs.end())
+                            refs = &refItr->second;
+
+                        if (boss || rare)
+                        {
+                            auto groupItr = _creatureGroups.find(lootId);
+                            if (groupItr != _creatureGroups.end())
+                                groups = &groupItr->second;
+                        }
+
+                        if (rare)
+                        {
+                            auto singleItr = _creatureSingles.find(lootId);
+                            if (singleItr != _creatureSingles.end())
+                                singles = &singleItr->second;
+                        }
                     }
 
                     sourceMap = creature->FindMap();
@@ -500,7 +621,7 @@ namespace LootBoost
                 }
             }
         }
-        else
+        else if (bossEnabled)
         {
             GameObject* chest = loot->sourceGameObject;
             if (!chest)
@@ -525,130 +646,184 @@ namespace LootBoost
             }
         }
 
-        if ((refs || groups) && sourceMap)
+        if ((refs || groups || singles) && sourceMap)
         {
             SizeBucket const bucket = GetBucket(sourceMap);
-            float const multiplier = _multipliers[bucket].load(std::memory_order_relaxed);
+            float multiplier = _multipliers[bucket].load(std::memory_order_relaxed);
+            if (kind == SOURCE_RARE)
+                multiplier = bucket == BUCKET_DUNGEON
+                    ? _rareDungeonMultiplier.load(std::memory_order_relaxed)
+                    : _rareWorldMultiplier.load(std::memory_order_relaxed);
+
+            float const duplicateWeight = _duplicateWeights[bucket].load(std::memory_order_relaxed);
             uint32 const maxItems = _maxItems.load(std::memory_order_relaxed);
             std::size_t const before = loot->items.size();
 
             if (multiplier > 1.0f)
             {
+                bool room = true;
                 if (refs)
-                    AddBonusPasses(loot, store, lootOwner, lootMode, *refs, multiplier, maxItems);
-                if (groups)
-                    AddBonusPicks(loot, lootMode, *groups, multiplier, maxItems);
+                    room = AddBonusPasses(loot, lootMode, *refs, multiplier, duplicateWeight, maxItems);
+                if (room && groups)
+                    room = AddBonusPicks(loot, lootMode, *groups, multiplier, duplicateWeight, maxItems);
+                if (room && singles)
+                    AddBonusRolls(loot, lootMode, *singles, multiplier, duplicateWeight, maxItems);
             }
 
             if (_logKills.load(std::memory_order_relaxed))
-                LOG_INFO("module", "LootBoost: {} (entry {}) uses {} x{:.2f}: {} -> {} items",
-                    sourceName, sourceEntry, GetBucketName(bucket), multiplier, before, loot->items.size());
+                LOG_INFO("module", "LootBoost: {} (entry {}, {}) uses {} x{:.2f}, duplicates x{:.2f}: {} -> {} items",
+                    sourceName, sourceEntry, kind == SOURCE_RARE ? "rare" : "boss", GetBucketName(bucket),
+                    multiplier, duplicateWeight, before, loot->items.size());
         }
 
-        MultiplyEmblems(loot);
+        if (bossEnabled)
+            MultiplyEmblems(loot);
     }
 
-    uint32 Manager::AddBonusPasses(Loot* loot, LootStore const& store, Player* lootOwner, uint16 lootMode,
-        std::vector<BonusReference> const& refs, float multiplier, uint32 maxItems) const
+    bool Manager::AddBonusPasses(Loot* loot, uint16 lootMode, std::vector<BonusReference> const& refs,
+        float multiplier, float duplicateWeight, uint32 maxItems) const
     {
-        uint32 added = 0;
-
         for (BonusReference const& ref : refs)
         {
             if (!(ref.lootMode & lootMode))
                 continue;
 
-            LootTemplate const* pool = LootTemplates_Reference.GetLootFor(ref.referenceId);
-            if (!pool)
+            auto itr = _pools.find(ref.referenceId);
+            if (itr == _pools.end())
                 continue;
 
             uint32 const passes = RandomRound(float(ref.maxCount) * (multiplier - 1.0f));
             for (uint32 i = 0; i < passes; ++i)
-            {
-                if (loot->items.size() >= maxItems)
-                    return added;
-
-                std::size_t const itemsBefore = loot->items.size();
-                std::size_t const questBefore = loot->quest_items.size();
-                uint8 const unlootedBefore = loot->unlootedCount;
-
-                // Same call the core uses for a reference row
-                pool->Process(*loot, store, lootMode, lootOwner, 0, false);
-
-                if (loot->items.size() > maxItems)
-                {
-                    // This pass would overfill the window: undo it, try the next pool
-                    RollbackTo(loot, itemsBefore, questBefore, unlootedBefore);
-                    break;
-                }
-
-                added += uint32(loot->items.size() - itemsBefore);
-            }
+                if (!RollTable(loot, lootMode, itr->second, duplicateWeight, maxItems))
+                    return false;
         }
 
-        return added;
+        return true;
     }
 
-    uint32 Manager::AddBonusPicks(Loot* loot, uint16 lootMode, std::vector<GearGroup> const& groups,
-        float multiplier, uint32 maxItems) const
+    bool Manager::AddBonusPicks(Loot* loot, uint16 lootMode, std::vector<PickGroup> const& groups,
+        float multiplier, float duplicateWeight, uint32 maxItems) const
     {
-        uint32 added = 0;
-        std::vector<GroupEntry const*> candidates;
-        std::vector<double> weights;
-
-        for (GearGroup const& group : groups)
+        for (PickGroup const& group : groups)
         {
             uint32 const picks = RandomRound(multiplier - 1.0f);
             for (uint32 i = 0; i < picks; ++i)
-            {
-                if (loot->items.size() >= maxItems)
-                    return added;
-
-                // A bonus pick keeps the group's normal chance to drop anything
-                if (group.totalChance < 100.0f && !roll_chance_f(group.totalChance))
-                    continue;
-
-                // Pick among the items that haven't dropped yet, with their
-                // odds scaled up, so a pick never comes up empty
-                candidates.clear();
-                weights.clear();
-                for (GroupEntry const& entry : group.entries)
-                {
-                    if (!(entry.lootMode & lootMode) || entry.weight <= 0.0f)
-                        continue;
-
-                    std::size_t const alreadyDropped = std::size_t(std::count_if(loot->items.begin(), loot->items.end(),
-                        [&entry](LootItem const& item) { return item.itemid == entry.itemId; }));
-                    if (alreadyDropped >= (entry.equippable ? 1u : 3u))
-                        continue;
-
-                    candidates.push_back(&entry);
-                    weights.push_back(double(entry.weight));
-                }
-
-                if (candidates.empty())
-                    break; // everything in this group has dropped already
-
-                GroupEntry const* pick = candidates[urandweighted(weights.size(), weights.data())];
-
-                std::size_t const itemsBefore = loot->items.size();
-                std::size_t const questBefore = loot->quest_items.size();
-                uint8 const unlootedBefore = loot->unlootedCount;
-
-                LootStoreItem storeItem(pick->itemId, 0, 100.0f, false, pick->lootMode, group.groupId, pick->minCount, pick->maxCount);
-                loot->AddItem(storeItem);
-
-                if (loot->items.size() > maxItems)
-                {
-                    RollbackTo(loot, itemsBefore, questBefore, unlootedBefore);
-                    return added;
-                }
-
-                added += uint32(loot->items.size() - itemsBefore);
-            }
+                if (!PickFromGroup(loot, lootMode, group, duplicateWeight, maxItems))
+                    return false;
         }
 
-        return added;
+        return true;
+    }
+
+    bool Manager::AddBonusRolls(Loot* loot, uint16 lootMode, std::vector<PickEntry> const& singles,
+        float multiplier, float duplicateWeight, uint32 maxItems) const
+    {
+        for (PickEntry const& entry : singles)
+        {
+            uint32 const rolls = RandomRound(multiplier - 1.0f);
+            for (uint32 i = 0; i < rolls; ++i)
+                if (!RollSingle(loot, lootMode, entry, duplicateWeight, maxItems))
+                    return false;
+        }
+
+        return true;
+    }
+
+    // One pass over a pool: every single item rolls, every group picks once.
+    bool Manager::RollTable(Loot* loot, uint16 lootMode, PickTable const& table, float duplicateWeight, uint32 maxItems) const
+    {
+        for (PickEntry const& entry : table.singles)
+            if (!RollSingle(loot, lootMode, entry, duplicateWeight, maxItems))
+                return false;
+
+        for (PickGroup const& group : table.groups)
+            if (!PickFromGroup(loot, lootMode, group, duplicateWeight, maxItems))
+                return false;
+
+        return true;
+    }
+
+    bool Manager::RollSingle(Loot* loot, uint16 lootMode, PickEntry const& entry, float duplicateWeight, uint32 maxItems) const
+    {
+        if (loot->items.size() >= maxItems)
+            return false;
+
+        if (!(entry.lootMode & lootMode))
+            return true;
+
+        float const chance = entry.weight * DuplicateFactor(loot, entry.itemId, duplicateWeight);
+        if (chance <= 0.0f || !roll_chance_f(chance))
+            return true;
+
+        return AddPicked(loot, entry, 0, maxItems);
+    }
+
+    bool Manager::PickFromGroup(Loot* loot, uint16 lootMode, PickGroup const& group, float duplicateWeight, uint32 maxItems) const
+    {
+        if (loot->items.size() >= maxItems)
+            return false;
+
+        // A bonus pick keeps the group's normal chance to drop anything
+        if (group.totalChance < 100.0f && !roll_chance_f(group.totalChance))
+            return true;
+
+        // Items that already dropped stay in the pick, at a reduced weight
+        std::vector<PickEntry const*> candidates;
+        std::vector<double> weights;
+        candidates.reserve(group.entries.size());
+        weights.reserve(group.entries.size());
+
+        for (PickEntry const& entry : group.entries)
+        {
+            if (!(entry.lootMode & lootMode))
+                continue;
+
+            double const weight = double(entry.weight) * DuplicateFactor(loot, entry.itemId, duplicateWeight);
+            if (weight <= 0.0)
+                continue;
+
+            candidates.push_back(&entry);
+            weights.push_back(weight);
+        }
+
+        if (candidates.empty())
+            return true; // with a duplicate weight of 0: everything has dropped already
+
+        PickEntry const* pick = candidates[urandweighted(weights.size(), weights.data())];
+        return AddPicked(loot, *pick, group.groupId, maxItems);
+    }
+
+    bool Manager::AddPicked(Loot* loot, PickEntry const& entry, uint8 groupId, uint32 maxItems) const
+    {
+        std::size_t const itemsBefore = loot->items.size();
+        std::size_t const questBefore = loot->quest_items.size();
+        uint8 const unlootedBefore = loot->unlootedCount;
+
+        // Each added item rolls its own random stats, like any other drop
+        LootStoreItem storeItem(entry.itemId, 0, 100.0f, false, entry.lootMode, groupId, entry.minCount, entry.maxCount);
+        loot->AddItem(storeItem);
+
+        if (loot->items.size() > maxItems)
+        {
+            // This item would overfill the window: undo it and stop
+            RollbackTo(loot, itemsBefore, questBefore, unlootedBefore);
+            return false;
+        }
+
+        return true;
+    }
+
+    // Each copy of an item already in the window multiplies its chance
+    // by the duplicate weight once more.
+    float Manager::DuplicateFactor(Loot const* loot, uint32 itemId, float duplicateWeight)
+    {
+        uint32 const copies = uint32(std::count_if(loot->items.begin(), loot->items.end(),
+            [itemId](LootItem const& item) { return item.itemid == itemId; }));
+
+        if (!copies)
+            return 1.0f;
+
+        return std::pow(duplicateWeight, float(copies));
     }
 
     void Manager::MultiplyEmblems(Loot* loot) const
